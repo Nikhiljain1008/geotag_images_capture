@@ -2,7 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart'; // Updated import
+import 'package:image_picker/image_picker.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:intl/intl.dart' as intl;
@@ -19,6 +19,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      debugShowCheckedModeBanner: false,
       title: 'Geo-Tagged Camera',
       theme: ThemeData(primarySwatch: Colors.blue),
       home: WelcomeScreen(),
@@ -54,7 +55,7 @@ class CameraScreen extends StatefulWidget {
 
 class _CameraScreenState extends State<CameraScreen> {
   final ImagePicker _picker = ImagePicker();
-  String _currentAddress = "-----------------------Fetching address...";
+  String _currentAddress = "Fetching address...";
   String _currentDate = "";
   File? _capturedImage;
   double? _latitude;
@@ -63,6 +64,34 @@ class _CameraScreenState extends State<CameraScreen> {
   @override
   void initState() {
     super.initState();
+    _checkPermissionsAndFetchLocation();
+  }
+
+  Future<void> _checkPermissionsAndFetchLocation() async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      await Geolocator.openLocationSettings();
+      return;
+    }
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        setState(() {
+          _currentAddress = "Location permission denied";
+        });
+        return;
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      setState(() {
+        _currentAddress = "Location permissions are permanently denied";
+      });
+      return;
+    }
+
     _fetchCurrentLocationAndDate();
   }
 
@@ -81,23 +110,23 @@ class _CameraScreenState extends State<CameraScreen> {
         _latitude = position.latitude;
         _longitude = position.longitude;
       });
+
+      print("Fetched Address: $_currentAddress");
     } catch (e) {
       setState(() {
-        _currentAddress =
-            "-------------------------------------Error fetching address";
-        _currentDate =
-            "-------------------------------------------Error fetching date";
+        print("---------------------------Error: ${e.toString()}");
+        _currentAddress = "Error fetching address";
+        _currentDate = "Error fetching date";
         _latitude = null;
         _longitude = null;
       });
+
+      print("Error fetching location: $e");
     }
   }
 
   Future<void> _captureImageWithWatermark() async {
     try {
-      print("-----------------------------------------Capture process started");
-
-      // Pick an image from gallery or take a new picture
       final XFile? image = await _picker.pickImage(source: ImageSource.camera);
       if (image == null) return;
 
@@ -105,23 +134,12 @@ class _CameraScreenState extends State<CameraScreen> {
         _capturedImage = File(image.path);
       });
 
-      print(
-          "------------------------------------------Image captured: ${image.path}");
-
-      // Path for the watermarked image
       final directory = await getApplicationDocumentsDirectory();
       final watermarkedFilePath =
           '${directory.path}/${DateTime.now().millisecondsSinceEpoch}_watermarked.png';
 
-      print(
-          "----------------------------------------------Saving watermarked image to $watermarkedFilePath");
-
-      // Add watermark
       await _addWatermark(image.path, watermarkedFilePath);
 
-      print("---------------------------------------Watermark added");
-
-      // Navigate to the new screen
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -133,34 +151,28 @@ class _CameraScreenState extends State<CameraScreen> {
         ),
       );
     } catch (e) {
-      print("------------------------------Error during image capture: $e");
+      print("Error during image capture: $e");
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text("---------------------------Error: ${e.toString()}")),
+        SnackBar(content: Text("Error: ${e.toString()}")),
       );
     }
   }
 
   Future<void> _addWatermark(
       String originalImagePath, String outputPath) async {
-    print("-----------------------------Adding watermark...");
-    // Load the original image
     final originalImage = File(originalImagePath);
     final imageBytes = await originalImage.readAsBytes();
     final codec = await ui.instantiateImageCodec(imageBytes);
     final frame = await codec.getNextFrame();
 
-    // Create a canvas to add the watermark
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
 
-    // Draw the original image
     final paint = Paint();
     final imageSize =
         Size(frame.image.width.toDouble(), frame.image.height.toDouble());
     canvas.drawImage(frame.image, Offset.zero, paint);
 
-    // Add watermark text
     final textPainter = TextPainter(
       text: TextSpan(
         text: "Address: $_currentAddress\nDate: $_currentDate",
@@ -169,10 +181,8 @@ class _CameraScreenState extends State<CameraScreen> {
       textDirection: TextDirection.ltr,
     );
     textPainter.layout();
-    textPainter.paint(
-        canvas, const Offset(20, 20)); // Position of the watermark
+    textPainter.paint(canvas, const Offset(20, 20));
 
-    // Finalize and save the new image
     final picture = recorder.endRecording();
     final img = await picture.toImage(frame.image.width, frame.image.height);
     final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
@@ -221,8 +231,7 @@ class _CameraScreenState extends State<CameraScreen> {
                       ),
                     );
                   } else {
-                    print(
-                        "--------------------------------------something is null capturedimage or latitude or longitude");
+                    print("Image or location data is null.");
                   }
                 },
                 icon: const Icon(Icons.location_on),
