@@ -2,39 +2,31 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:camera/camera.dart';
-import 'package:flutter/rendering.dart';
+import 'package:image_picker/image_picker.dart'; // Updated import
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
-import 'package:intl/intl.dart';
+import 'package:intl/intl.dart' as intl;
 import 'package:path_provider/path_provider.dart';
+import 'package:flutter/widgets.dart';
+import 'package:flutter/rendering.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final cameras = await availableCameras();
-  runApp(MyApp(cameras: cameras));
+  runApp(MyApp());
 }
 
 class MyApp extends StatelessWidget {
-  final List<CameraDescription> cameras;
-
-  const MyApp({required this.cameras, Key? key}) : super(key: key);
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Geo-Tagged Camera',
       theme: ThemeData(primarySwatch: Colors.blue),
-      home: WelcomeScreen(cameras: cameras),
+      home: WelcomeScreen(),
     );
   }
 }
 
 class WelcomeScreen extends StatelessWidget {
-  final List<CameraDescription> cameras;
-
-  const WelcomeScreen({required this.cameras, Key? key}) : super(key: key);
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -44,7 +36,7 @@ class WelcomeScreen extends StatelessWidget {
             Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (context) => CameraScreen(cameras: cameras),
+                builder: (context) => CameraScreen(),
               ),
             );
           },
@@ -56,44 +48,22 @@ class WelcomeScreen extends StatelessWidget {
 }
 
 class CameraScreen extends StatefulWidget {
-  final List<CameraDescription> cameras;
-
-  const CameraScreen({required this.cameras, Key? key}) : super(key: key);
-
   @override
   State<CameraScreen> createState() => _CameraScreenState();
 }
 
 class _CameraScreenState extends State<CameraScreen> {
-  late CameraController _controller;
-  late Future<void> _initializeControllerFuture;
-  String _currentAddress = "Fetching address...";
+  final ImagePicker _picker = ImagePicker();
+  String _currentAddress = "-----------------------Fetching address...";
   String _currentDate = "";
   File? _capturedImage;
-
-  final GlobalKey _globalKey = GlobalKey();
+  double? _latitude;
+  double? _longitude;
 
   @override
   void initState() {
     super.initState();
-    _initializeCamera();
     _fetchCurrentLocationAndDate();
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  Future<void> _initializeCamera() async {
-    _controller = CameraController(
-      widget.cameras[0],
-      ResolutionPreset.high,
-      enableAudio: false,
-    );
-    _initializeControllerFuture = _controller.initialize();
-    setState(() {});
   }
 
   Future<void> _fetchCurrentLocationAndDate() async {
@@ -106,33 +76,52 @@ class _CameraScreenState extends State<CameraScreen> {
       setState(() {
         _currentAddress =
             "${place.subLocality}, ${place.locality}, ${place.country}";
-        _currentDate = DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now());
+        _currentDate =
+            intl.DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now());
+        _latitude = position.latitude;
+        _longitude = position.longitude;
       });
     } catch (e) {
       setState(() {
-        _currentAddress = "Error fetching address";
-        _currentDate = "Error fetching date";
+        _currentAddress =
+            "-------------------------------------Error fetching address";
+        _currentDate =
+            "-------------------------------------------Error fetching date";
+        _latitude = null;
+        _longitude = null;
       });
     }
   }
 
   Future<void> _captureImageWithWatermark() async {
     try {
-      await _initializeControllerFuture;
+      print("-----------------------------------------Capture process started");
 
-      final image = await _controller.takePicture();
+      // Pick an image from gallery or take a new picture
+      final XFile? image = await _picker.pickImage(source: ImageSource.camera);
+      if (image == null) return;
+
       setState(() {
         _capturedImage = File(image.path);
       });
 
+      print(
+          "------------------------------------------Image captured: ${image.path}");
+
+      // Path for the watermarked image
       final directory = await getApplicationDocumentsDirectory();
       final watermarkedFilePath =
           '${directory.path}/${DateTime.now().millisecondsSinceEpoch}_watermarked.png';
 
-      // Save image with watermark
+      print(
+          "----------------------------------------------Saving watermarked image to $watermarkedFilePath");
+
+      // Add watermark
       await _addWatermark(image.path, watermarkedFilePath);
 
-      // Navigate to the new page with the watermarked image
+      print("---------------------------------------Watermark added");
+
+      // Navigate to the new screen
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -144,50 +133,104 @@ class _CameraScreenState extends State<CameraScreen> {
         ),
       );
     } catch (e) {
+      print("------------------------------Error during image capture: $e");
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error: ${e.toString()}")),
+        SnackBar(
+            content: Text("---------------------------Error: ${e.toString()}")),
       );
     }
   }
 
   Future<void> _addWatermark(
       String originalImagePath, String outputPath) async {
-    RenderRepaintBoundary boundary =
-        _globalKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
-    ui.Image image = await boundary.toImage();
-    ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-    Uint8List pngBytes = byteData!.buffer.asUint8List();
+    print("-----------------------------Adding watermark...");
+    // Load the original image
+    final originalImage = File(originalImagePath);
+    final imageBytes = await originalImage.readAsBytes();
+    final codec = await ui.instantiateImageCodec(imageBytes);
+    final frame = await codec.getNextFrame();
 
-    File(outputPath).writeAsBytesSync(pngBytes);
+    // Create a canvas to add the watermark
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    // Draw the original image
+    final paint = Paint();
+    final imageSize =
+        Size(frame.image.width.toDouble(), frame.image.height.toDouble());
+    canvas.drawImage(frame.image, Offset.zero, paint);
+
+    // Add watermark text
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: "Address: $_currentAddress\nDate: $_currentDate",
+        style: const TextStyle(color: Colors.white, fontSize: 24),
+      ),
+      textDirection: TextDirection.ltr,
+    );
+    textPainter.layout();
+    textPainter.paint(
+        canvas, const Offset(20, 20)); // Position of the watermark
+
+    // Finalize and save the new image
+    final picture = recorder.endRecording();
+    final img = await picture.toImage(frame.image.width, frame.image.height);
+    final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
+
+    final watermarkedBytes = byteData!.buffer.asUint8List();
+    await File(outputPath).writeAsBytes(watermarkedBytes);
+
+    print("Watermarked image saved to $outputPath");
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Geo-Tagged Camera')),
-      body: RepaintBoundary(
-        key: _globalKey,
-        child: Column(
-          children: [
+      body: Column(
+        children: [
+          if (_capturedImage != null)
             Expanded(
-              child: FutureBuilder<void>(
-                future: _initializeControllerFuture,
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.done) {
-                    return CameraPreview(_controller);
-                  } else {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                },
+              child: Image.file(
+                _capturedImage!,
+                fit: BoxFit.contain,
               ),
             ),
-            ElevatedButton.icon(
-              onPressed: _captureImageWithWatermark,
-              icon: const Icon(Icons.camera_alt),
-              label: const Text("Capture Photo"),
-            ),
-          ],
-        ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              ElevatedButton.icon(
+                onPressed: _captureImageWithWatermark,
+                icon: const Icon(Icons.camera_alt),
+                label: const Text("Capture Photo"),
+              ),
+              const SizedBox(width: 20),
+              ElevatedButton.icon(
+                onPressed: () {
+                  if (_capturedImage != null &&
+                      _latitude != null &&
+                      _longitude != null) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => GeoTaggedImageScreen(
+                          imagePath: _capturedImage!.path,
+                          latitude: _latitude!,
+                          longitude: _longitude!,
+                        ),
+                      ),
+                    );
+                  } else {
+                    print(
+                        "--------------------------------------something is null capturedimage or latitude or longitude");
+                  }
+                },
+                icon: const Icon(Icons.location_on),
+                label: const Text("Show Geo-Tag"),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -217,19 +260,55 @@ class WatermarkedImageScreen extends StatelessWidget {
               fit: BoxFit.contain,
             ),
           ),
-          Text(
-            "Address: $address",
-            textAlign: TextAlign.center,
-          ),
-          Text(
-            "Date: $date",
-            textAlign: TextAlign.center,
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Text(
+              "Address: $address\nDate: $date",
+              textAlign: TextAlign.center,
+            ),
           ),
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context);
             },
             child: const Text("Back to Camera"),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class GeoTaggedImageScreen extends StatelessWidget {
+  final String imagePath;
+  final double latitude;
+  final double longitude;
+
+  const GeoTaggedImageScreen({
+    required this.imagePath,
+    required this.latitude,
+    required this.longitude,
+    Key? key,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Geo-Tagged Image")),
+      body: Column(
+        children: [
+          Expanded(
+            child: Image.file(
+              File(imagePath),
+              fit: BoxFit.contain,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Text(
+              "Latitude: $latitude\nLongitude: $longitude",
+              textAlign: TextAlign.center,
+            ),
           ),
         ],
       ),
