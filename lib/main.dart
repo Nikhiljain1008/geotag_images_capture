@@ -9,6 +9,7 @@ import 'package:intl/intl.dart' as intl;
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter/rendering.dart';
+import 'package:gallery_saver/gallery_saver.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -97,14 +98,19 @@ class _CameraScreenState extends State<CameraScreen> {
 
   Future<void> _fetchCurrentLocationAndDate() async {
     try {
-      Position position = await Geolocator.getCurrentPosition();
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
       List<Placemark> placemarks =
           await placemarkFromCoordinates(position.latitude, position.longitude);
       Placemark place = placemarks[0];
 
       setState(() {
         _currentAddress =
-            "${place.subLocality}, ${place.locality}, ${place.country}";
+            "${place.name}, ${place.street}, ${place.subLocality}, "
+            "${place.locality}, ${place.administrativeArea}, ${place.postalCode}, "
+            "${place.country}";
         _currentDate =
             intl.DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now());
         _latitude = position.latitude;
@@ -112,9 +118,9 @@ class _CameraScreenState extends State<CameraScreen> {
       });
 
       print("Fetched Address: $_currentAddress");
+      print("Latitude: $_latitude, Longitude: $_longitude");
     } catch (e) {
       setState(() {
-        print("---------------------------Error: ${e.toString()}");
         _currentAddress = "Error fetching address";
         _currentDate = "Error fetching date";
         _latitude = null;
@@ -139,6 +145,19 @@ class _CameraScreenState extends State<CameraScreen> {
           '${directory.path}/${DateTime.now().millisecondsSinceEpoch}_watermarked.png';
 
       await _addWatermark(image.path, watermarkedFilePath);
+
+      // Save the watermarked image to the gallery
+      await GallerySaver.saveImage(watermarkedFilePath).then((success) {
+        if (success != null && success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Image saved to gallery")),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Failed to save image to gallery")),
+          );
+        }
+      });
 
       Navigator.push(
         context,
@@ -173,15 +192,31 @@ class _CameraScreenState extends State<CameraScreen> {
         Size(frame.image.width.toDouble(), frame.image.height.toDouble());
     canvas.drawImage(frame.image, Offset.zero, paint);
 
-    final textPainter = TextPainter(
-      text: TextSpan(
-        text: "Address: $_currentAddress\nDate: $_currentDate",
-        style: const TextStyle(color: Colors.white, fontSize: 24),
-      ),
-      textDirection: TextDirection.ltr,
-    );
-    textPainter.layout();
-    textPainter.paint(canvas, const Offset(20, 20));
+    // Text to add to the watermark
+    final watermarkText = "Address: $_currentAddress\n"
+        "Date: $_currentDate\n"
+        "Latitude: ${_latitude?.toStringAsFixed(6)}\n"
+        "Longitude: ${_longitude?.toStringAsFixed(6)}";
+
+    // Define text style and maximum width for wrapping
+    final textStyle = TextStyle(color: Colors.white, fontSize: 80);
+    final maxWidth = imageSize.width - 20; // Padding of 20 on each side
+
+    // Calculate the wrapped text
+    final wrappedTextLines = _wrapText(watermarkText, textStyle, maxWidth);
+
+    // Draw each line of text on the canvas
+    double yOffset = imageSize.height - 20; // Start near the bottom
+    for (String line in wrappedTextLines.reversed) {
+      final textPainter = TextPainter(
+        text: TextSpan(text: line, style: textStyle),
+        textDirection: TextDirection.ltr,
+      );
+      textPainter.layout(maxWidth: maxWidth);
+
+      yOffset -= textPainter.height + 5; // Adjust position for each line
+      textPainter.paint(canvas, Offset(20, yOffset));
+    }
 
     final picture = recorder.endRecording();
     final img = await picture.toImage(frame.image.width, frame.image.height);
@@ -191,6 +226,37 @@ class _CameraScreenState extends State<CameraScreen> {
     await File(outputPath).writeAsBytes(watermarkedBytes);
 
     print("Watermarked image saved to $outputPath");
+  }
+
+// Helper function to wrap text into multiple lines
+  List<String> _wrapText(String text, TextStyle style, double maxWidth) {
+    final words = text.split(' ');
+    List<String> lines = [];
+    String currentLine = "";
+
+    final textPainter = TextPainter(
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.left,
+    );
+
+    for (String word in words) {
+      final testLine = (currentLine.isEmpty ? "" : "$currentLine ") + word;
+      textPainter.text = TextSpan(text: testLine, style: style);
+      textPainter.layout();
+
+      if (textPainter.width <= maxWidth) {
+        currentLine = testLine;
+      } else {
+        lines.add(currentLine);
+        currentLine = word;
+      }
+    }
+
+    if (currentLine.isNotEmpty) {
+      lines.add(currentLine);
+    }
+
+    return lines;
   }
 
   @override
@@ -213,29 +279,6 @@ class _CameraScreenState extends State<CameraScreen> {
                 onPressed: _captureImageWithWatermark,
                 icon: const Icon(Icons.camera_alt),
                 label: const Text("Capture Photo"),
-              ),
-              const SizedBox(width: 20),
-              ElevatedButton.icon(
-                onPressed: () {
-                  if (_capturedImage != null &&
-                      _latitude != null &&
-                      _longitude != null) {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => GeoTaggedImageScreen(
-                          imagePath: _capturedImage!.path,
-                          latitude: _latitude!,
-                          longitude: _longitude!,
-                        ),
-                      ),
-                    );
-                  } else {
-                    print("Image or location data is null.");
-                  }
-                },
-                icon: const Icon(Icons.location_on),
-                label: const Text("Show Geo-Tag"),
               ),
             ],
           ),
@@ -281,43 +324,6 @@ class WatermarkedImageScreen extends StatelessWidget {
               Navigator.pop(context);
             },
             child: const Text("Back to Camera"),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class GeoTaggedImageScreen extends StatelessWidget {
-  final String imagePath;
-  final double latitude;
-  final double longitude;
-
-  const GeoTaggedImageScreen({
-    required this.imagePath,
-    required this.latitude,
-    required this.longitude,
-    Key? key,
-  }) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("Geo-Tagged Image")),
-      body: Column(
-        children: [
-          Expanded(
-            child: Image.file(
-              File(imagePath),
-              fit: BoxFit.contain,
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Text(
-              "Latitude: $latitude\nLongitude: $longitude",
-              textAlign: TextAlign.center,
-            ),
           ),
         ],
       ),
